@@ -9,6 +9,8 @@ import connectDB from "./config/db.js";
 import compilerRoutes from "./routes/compilerRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import roomRoutes from "./routes/roomRoutes.js";
+import submissionRoutes from "./routes/submissionRoutes.js";
+import aiRoutes from "./routes/aiRoutes.js";
 import { setupSockets } from "./sockets/socketHandler.js";
 
 // Load environment variables
@@ -35,6 +37,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/rooms", roomRoutes);
 app.use("/api/leetcode", leetcodeRoutes);
 app.use("/api/compiler", compilerRoutes);
+app.use("/api/submissions", submissionRoutes);
+app.use("/api/ai", aiRoutes);
 
 // Health check route
 app.get("/api/health", (req, res) => {

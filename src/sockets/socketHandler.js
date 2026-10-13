@@ -18,6 +18,10 @@ const parseCookieString = (cookieString) => {
 // In-memory store to track online users: { [roomId]: [{ socketId, userId, name }] }
 const roomOnlineUsers = new Map();
 
+// In-memory store for active WebRTC voice/video call participants:
+// { [roomId]: Map(socketId -> { socketId, userId, name, micMuted, camOff }) }
+const roomCallParticipants = new Map();
+
 export const setupSockets = (io) => {
   // 1. Socket Authentication Middleware (runs on handshake)
   io.use(async (socket, next) => {
@@ -90,6 +94,16 @@ export const setupSockets = (io) => {
         // Broadcast updated online roster to everyone in this room
         io.to(roomId).emit("online_users", onlineList);
 
+        // If room has an active LeetCode problem, sync it to the newcomer
+        if (room.activeProblem) {
+          socket.emit("problem_selected", { problem: room.activeProblem });
+        }
+
+        // If room has whiteboard drawings, sync them to the newcomer
+        if (room.whiteboard && room.whiteboard.length > 0) {
+          socket.emit("whiteboard_init", { elements: room.whiteboard });
+        }
+
         console.log(`👤 ${socket.user.name} joined room: ${room.name}`);
       } catch (err) {
         socket.emit("error", { message: "Failed to join room" });
@@ -157,9 +171,192 @@ export const setupSockets = (io) => {
       }
     });
 
-     socket.on("select_problem", ({ roomId, problem }) => {
-      // Broadcast selected problem to everyone in the room (except sender)
-      socket.to(roomId).emit("problem_selected", { problem });
+    socket.on("select_problem", async ({ roomId, problem }) => {
+      try {
+        // Broadcast selected problem to everyone in the room (except sender)
+        socket.to(roomId).emit("problem_selected", { problem });
+
+        // Save active LeetCode problem into MongoDB Room document
+        await Room.findByIdAndUpdate(roomId, { activeProblem: problem });
+      } catch (err) {
+        console.error("Error saving selected problem:", err.message);
+      }
+    });
+
+    // EVENT: peer_typing (Real-time collaborative typing indicator)
+    socket.on("peer_typing", ({ roomId, isTyping }) => {
+      socket.to(roomId).emit("peer_typing_update", {
+        userId: socket.user._id,
+        name: socket.user.name,
+        isTyping,
+      });
+    });
+
+    // ==========================================
+    // 🎨 REAL-TIME COLLABORATIVE WHITEBOARD
+    // ==========================================
+    socket.on("whiteboard_draw", async ({ roomId, element }) => {
+      // Broadcast new stroke/shape to everyone in room (except sender)
+      socket.to(roomId).emit("whiteboard_stroke", { element });
+
+      // Persist to room in MongoDB
+      try {
+        await Room.findByIdAndUpdate(roomId, {
+          $push: { whiteboard: element },
+        });
+      } catch (err) {
+        console.error("Error saving whiteboard element:", err.message);
+      }
+    });
+
+    socket.on("whiteboard_clear", async ({ roomId }) => {
+      // Broadcast clear to room
+      socket.to(roomId).emit("whiteboard_cleared");
+
+      // Reset whiteboard array in DB
+      try {
+        await Room.findByIdAndUpdate(roomId, { whiteboard: [] });
+      } catch (err) {
+        console.error("Error clearing whiteboard:", err.message);
+      }
+    });
+
+    socket.on("whiteboard_undo", async ({ roomId, elements }) => {
+      // Broadcast updated elements array after undo to room
+      socket.to(roomId).emit("whiteboard_sync", { elements });
+
+      try {
+        await Room.findByIdAndUpdate(roomId, { whiteboard: elements });
+      } catch (err) {
+        console.error("Error syncing whiteboard undo:", err.message);
+      }
+    });
+
+    // Client requests current whiteboard state on demand (e.g. latecomer or tab switch)
+    socket.on("whiteboard_request_sync", async ({ roomId }) => {
+      try {
+        const room = await Room.findById(roomId);
+        if (room && Array.isArray(room.whiteboard)) {
+          socket.emit("whiteboard_init", { elements: room.whiteboard });
+        }
+      } catch (err) {
+        console.error("Error sending whiteboard state on request:", err.message);
+      }
+    });
+
+    // ==========================================
+    // ⏱️ SYNCHRONIZED MOCK INTERVIEW TIMER
+    // ==========================================
+    socket.on("mock_timer_action", ({ roomId, action, timeLeft, totalTime, isRunning, presetName }) => {
+      socket.to(roomId).emit("mock_timer_sync", {
+        action,
+        timeLeft,
+        totalTime,
+        isRunning,
+        presetName,
+        senderName: socket.user?.name || "Peer",
+        timestamp: Date.now(),
+      });
+    });
+
+    // ==========================================
+    // 🎉 ACCEPTED SOLUTION CELEBRATION
+    // ==========================================
+    socket.on("celebrate_accepted", ({ roomId, problemTitle }) => {
+      socket.to(roomId).emit("peer_celebrate_accepted", {
+        userName: socket.user?.name || "A peer",
+        problemTitle: problemTitle || "the problem",
+      });
+    });
+
+    // ==========================================
+    // 🎙️ WEBRTC MESH AUDIO / VIDEO SIGNALING
+    // ==========================================
+
+    // Join voice/video call in this room
+    socket.on("webrtc_join_call", ({ roomId, micMuted = false, camOff = false }) => {
+      try {
+        if (!roomCallParticipants.has(roomId)) {
+          roomCallParticipants.set(roomId, new Map());
+        }
+        const callMap = roomCallParticipants.get(roomId);
+
+        // Get list of existing peers currently in this call
+        const existingPeers = Array.from(callMap.values());
+
+        // Save current user's call state
+        callMap.set(socket.id, {
+          socketId: socket.id,
+          userId: socket.user._id,
+          name: socket.user.name,
+          micMuted,
+          camOff,
+        });
+
+        // 1. Send the list of existing peers back to newcomer
+        socket.emit("webrtc_existing_peers", { peers: existingPeers });
+
+        // 2. Notify all existing peers in the room that a newcomer has joined the call
+        socket.to(roomId).emit("webrtc_peer_joined", {
+          socketId: socket.id,
+          userId: socket.user._id,
+          name: socket.user.name,
+          micMuted,
+          camOff,
+        });
+
+        console.log(`📹 ${socket.user.name} joined call in room: ${roomId}`);
+      } catch (err) {
+        console.error("webrtc_join_call error:", err);
+      }
+    });
+
+    // Relay SDP Offer to a specific peer
+    socket.on("webrtc_signal_offer", ({ targetSocketId, offer }) => {
+      io.to(targetSocketId).emit("webrtc_receive_offer", {
+        callerSocketId: socket.id,
+        callerUserId: socket.user._id,
+        callerName: socket.user.name,
+        offer,
+      });
+    });
+
+    // Relay SDP Answer back to caller
+    socket.on("webrtc_signal_answer", ({ targetSocketId, answer }) => {
+      io.to(targetSocketId).emit("webrtc_receive_answer", {
+        senderSocketId: socket.id,
+        answer,
+      });
+    });
+
+    // Relay ICE Candidate to target peer
+    socket.on("webrtc_ice_candidate", ({ targetSocketId, candidate }) => {
+      io.to(targetSocketId).emit("webrtc_ice_candidate", {
+        senderSocketId: socket.id,
+        candidate,
+      });
+    });
+
+    // Relay Mic / Camera toggle status
+    socket.on("webrtc_media_status", ({ roomId, micMuted, camOff }) => {
+      if (roomCallParticipants.has(roomId)) {
+        const callMap = roomCallParticipants.get(roomId);
+        if (callMap.has(socket.id)) {
+          const userState = callMap.get(socket.id);
+          userState.micMuted = micMuted;
+          userState.camOff = camOff;
+        }
+      }
+      socket.to(roomId).emit("webrtc_peer_status_changed", {
+        socketId: socket.id,
+        micMuted,
+        camOff,
+      });
+    });
+
+    // User explicitly leaves voice/video call
+    socket.on("webrtc_leave_call", ({ roomId }) => {
+      handleUserLeavingCall(socket, roomId);
     });
 
     // EVENT: leave_room
@@ -176,8 +373,28 @@ export const setupSockets = (io) => {
     });
   });
 
+  // Helper function to remove user from voice/video call
+  function handleUserLeavingCall(socket, roomId) {
+    if (roomCallParticipants.has(roomId)) {
+      const callMap = roomCallParticipants.get(roomId);
+      if (callMap.has(socket.id)) {
+        callMap.delete(socket.id);
+        if (callMap.size === 0) {
+          roomCallParticipants.delete(roomId);
+        }
+        socket.to(roomId).emit("webrtc_peer_left", {
+          socketId: socket.id,
+          userId: socket.user?._id,
+          name: socket.user?.name,
+        });
+        console.log(`👋 ${socket.user?.name} left call in room: ${roomId}`);
+      }
+    }
+  }
+
   // Helper function to remove user from presence roster and alert room
   function handleUserLeaving(socket, roomId) {
+    handleUserLeavingCall(socket, roomId);
     socket.leave(roomId);
 
     if (roomOnlineUsers.has(roomId)) {

@@ -56,6 +56,16 @@ const roomSchema = new mongoose.Schema(
       type: String,
       default: "# Study Notes\n- Use this space to write lecture notes, formulas, or agendas together.\n",
     },
+    // 🏆 Synchronized LeetCode Problem for all room members
+    activeProblem: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+    // 🎨 Collaborative Whiteboard Strokes
+    whiteboard: {
+      type: Array,
+      default: [],
+    },
   },
   {
     timestamps: true,
