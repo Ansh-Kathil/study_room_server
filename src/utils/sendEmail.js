@@ -1,23 +1,37 @@
 import nodemailer from "nodemailer";
 
-// Create reusable transporter
+// Create reusable transporter with explicit SSL and timeout handling for cloud hosts like Render
 const createTransporter = () => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     return null; // Fallback to console if credentials not provided
   }
 
   return nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true, // Use SSL on port 465
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
+    tls: {
+      rejectUnauthorized: false,
+    },
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 5000,
+    socketTimeout: 10000,
   });
+};
+
+const getBaseClientUrl = () => {
+  const raw = process.env.CLIENT_URL || "http://localhost:3000";
+  return raw.split(",")[0].trim().replace(/\/+$/, "");
 };
 
 // 📧 1. Send Account Verification Email
 export const sendVerificationEmail = async (email, token) => {
-  const verificationUrl = `http://localhost:3000/verify-email?token=${token}`;
+  const baseUrl = getBaseClientUrl();
+  const verificationUrl = `${baseUrl}/verify-email?token=${token}`;
   const transporter = createTransporter();
 
   // If EMAIL_USER is not configured in .env, log to console
@@ -61,12 +75,14 @@ export const sendVerificationEmail = async (email, token) => {
     console.log(`✅ [EMAIL DISPATCHED TO]: ${email}`);
   } catch (err) {
     console.error(`❌ [EMAIL DISPATCH FAILED]: ${err.message}`);
+    console.log(`💡 [MANUAL VERIFICATION LINK]: ${verificationUrl}`);
   }
 };
 
 // 📧 2. Send Study Room Invitation Email
 export const sendRoomInviteEmail = async (recipientEmail, room, inviterName) => {
-  const joinUrl = `http://localhost:3000/dashboard?joinCode=${room.joinCode}`;
+  const baseUrl = getBaseClientUrl();
+  const joinUrl = `${baseUrl}/dashboard?joinCode=${room.joinCode}`;
   const transporter = createTransporter();
 
   if (!transporter) {
