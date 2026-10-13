@@ -25,9 +25,36 @@ const PORT = process.env.PORT || 5000;
 // Essential middlewares
 app.use(express.json());
 app.use(cookieParser());
+
+// Robust CORS origin handler (strips trailing slashes, supports Vercel preview URLs & localhost)
+const rawClientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+const normalizedClientUrls = rawClientUrl
+  .split(",")
+  .map((u) => u.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
+const corsOriginChecker = (origin, callback) => {
+  // Allow requests with no origin (mobile apps, curl, server-to-server)
+  if (!origin) return callback(null, true);
+
+  const cleanOrigin = origin.replace(/\/+$/, "");
+
+  const isAllowed =
+    normalizedClientUrls.includes("*") ||
+    normalizedClientUrls.includes(cleanOrigin) ||
+    cleanOrigin.endsWith(".vercel.app") ||
+    cleanOrigin.includes("localhost");
+
+  if (isAllowed) {
+    return callback(null, true);
+  }
+
+  callback(new Error(`CORS blocked for origin: ${origin}`));
+};
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    origin: corsOriginChecker,
     credentials: true,
   })
 );
@@ -50,7 +77,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    origin: corsOriginChecker,
     credentials: true,
   },
 });
