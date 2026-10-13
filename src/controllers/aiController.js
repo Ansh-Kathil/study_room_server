@@ -169,12 +169,12 @@ export const aiCoachHandler = async (req, res) => {
       level: hintLevel,
     });
   } catch (error) {
-    console.error("AI Coach error:", error);
-    // Fall back gracefully on API error
+    console.error("❌ [GEMINI API CALL FAILED]:", error.message || error);
+    // If the API call fails (e.g. rate limit, quota, invalid key on Render), provide informative response
     const fallback = generateFallbackResponse(req.body);
     return res.json({
       success: true,
-      source: "fallback",
+      source: "gemini-fallback",
       error: error.message,
       ...fallback,
     });
