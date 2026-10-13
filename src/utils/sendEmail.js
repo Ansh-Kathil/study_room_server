@@ -1,11 +1,42 @@
 import nodemailer from "nodemailer";
-import { Resend } from "resend";
 
-const getResendClient = () => {
-  if (process.env.RESEND_API_KEY) {
-    return new Resend(process.env.RESEND_API_KEY);
+// Dispatch email using Brevo (Sendinblue) HTTP REST API over Port 443 (NEVER blocked by cloud providers)
+const sendWithBrevo = async ({ toEmail, subject, htmlContent }) => {
+  if (!process.env.BREVO_API_KEY) {
+    return false;
   }
-  return null;
+
+  const senderEmail = process.env.EMAIL_USER || "anshkathil7379@gmail.com";
+  const senderName = "Collaborative Study Room";
+
+  try {
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender: { name: senderName, email: senderEmail },
+        to: [{ email: toEmail }],
+        subject: subject,
+        htmlContent: htmlContent,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("❌ [BREVO API ERROR]:", data.message || JSON.stringify(data));
+      return false;
+    }
+
+    console.log(`✅ [EMAIL DISPATCHED VIA BREVO TO]: ${toEmail} (MessageId: ${data.messageId})`);
+    return true;
+  } catch (err) {
+    console.error("❌ [BREVO FETCH FAILED]:", err.message);
+    return false;
+  }
 };
 
 // Create reusable SMTP transporter as fallback for local dev
@@ -38,7 +69,6 @@ const getBaseClientUrl = () => {
 export const sendVerificationEmail = async (email, token) => {
   const baseUrl = getBaseClientUrl();
   const verificationUrl = `${baseUrl}/verify-email?token=${token}`;
-  const resend = getResendClient();
 
   const emailSubject = "Verify Your Study Room Account 🎓";
   const emailHtml = `
@@ -63,32 +93,17 @@ export const sendVerificationEmail = async (email, token) => {
     </div>
   `;
 
-  // Method 1: Use Resend REST API (HTTPS port 443 — NEVER blocked by Render)
-  if (resend) {
-    try {
-      const fromSender = process.env.EMAIL_FROM || "Collaborative Study Room <onboarding@resend.dev>";
-      const result = await resend.emails.send({
-        from: fromSender,
-        to: email,
-        subject: emailSubject,
-        html: emailHtml,
-      });
-
-      if (result.error) {
-        console.error(`❌ [RESEND API ERROR]: ${result.error.message}`);
-        console.log(`💡 [MANUAL VERIFICATION LINK]: ${verificationUrl}`);
-      } else {
-        console.log(`✅ [EMAIL DISPATCHED VIA RESEND TO]: ${email} (ID: ${result.data?.id})`);
-      }
-      return;
-    } catch (err) {
-      console.error(`❌ [RESEND DISPATCH FAILED]: ${err.message}`);
-      console.log(`💡 [MANUAL VERIFICATION LINK]: ${verificationUrl}`);
-      return;
-    }
+  // 1. Primary Method: Brevo HTTPS REST API (Port 443 — works on Render free tier to ANY recipient)
+  if (process.env.BREVO_API_KEY) {
+    const sent = await sendWithBrevo({
+      toEmail: email,
+      subject: emailSubject,
+      htmlContent: emailHtml,
+    });
+    if (sent) return;
   }
 
-  // Method 2: Fallback to Nodemailer SMTP
+  // 2. Secondary Method: SMTP (works in local dev where port 465 is open)
   const transporter = createSmtpTransporter();
   if (transporter) {
     try {
@@ -102,12 +117,10 @@ export const sendVerificationEmail = async (email, token) => {
       return;
     } catch (err) {
       console.error(`❌ [SMTP DISPATCH FAILED]: ${err.message}`);
-      console.log(`💡 [MANUAL VERIFICATION LINK]: ${verificationUrl}`);
-      return;
     }
   }
 
-  // Method 3: Development / Offline Console fallback
+  // 3. Always log fallback link to server console for instant manual verification
   console.log("\n=======================================================");
   console.log(`📧 [EMAIL SENT TO]: ${email}`);
   console.log(`🔗 [VERIFY LINK]: ${verificationUrl}`);
@@ -118,7 +131,6 @@ export const sendVerificationEmail = async (email, token) => {
 export const sendRoomInviteEmail = async (recipientEmail, room, inviterName) => {
   const baseUrl = getBaseClientUrl();
   const joinUrl = `${baseUrl}/dashboard?joinCode=${room.joinCode}`;
-  const resend = getResendClient();
 
   const emailSubject = `You're invited to join "${room.name}" on Study Room 📚`;
   const emailHtml = `
@@ -152,20 +164,13 @@ export const sendRoomInviteEmail = async (recipientEmail, room, inviterName) => 
     </div>
   `;
 
-  if (resend) {
-    try {
-      const fromSender = process.env.EMAIL_FROM || "Collaborative Study Room <onboarding@resend.dev>";
-      await resend.emails.send({
-        from: fromSender,
-        to: recipientEmail,
-        subject: emailSubject,
-        html: emailHtml,
-      });
-      console.log(`✅ [INVITATION DISPATCHED VIA RESEND TO]: ${recipientEmail}`);
-      return;
-    } catch (err) {
-      console.error(`❌ [RESEND INVITATION FAILED]: ${err.message}`);
-    }
+  if (process.env.BREVO_API_KEY) {
+    const sent = await sendWithBrevo({
+      toEmail: recipientEmail,
+      subject: emailSubject,
+      htmlContent: emailHtml,
+    });
+    if (sent) return;
   }
 
   const transporter = createSmtpTransporter();
