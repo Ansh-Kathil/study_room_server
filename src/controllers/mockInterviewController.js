@@ -9,6 +9,39 @@ const getGeminiClient = () => {
 };
 
 // Curated fallbacks for instant offline or rate-limited interview turns
+const BEGINNER_STARTER_QUESTIONS = {
+  frontend: [
+    "Could you tell me about the differences between let, const, and var in JavaScript?",
+    "In React, how do you explain the difference between state and props to someone new to web development?",
+    "What is the CSS Box Model and how do margin and padding differ?",
+  ],
+  backend: [
+    "What is a REST API, and what is the difference between an HTTP GET and an HTTP POST request?",
+    "What are some common HTTP status codes like 200, 404, and 500, and what do they mean?",
+    "What is Node.js, and why do developers use it instead of running JavaScript in the browser?",
+  ],
+  fullstack: [
+    "Can you walk me through a simple project you've built, and what technologies you used for it?",
+    "What is Git, and how do commands like git add, git commit, and git push work in your workflow?",
+    "What is the difference between a frontend and a backend in web development?",
+  ],
+  oops: [
+    "In Object-Oriented Programming, how would you explain what a class is versus what an object is?",
+    "Could you give a simple real-world example of Inheritance, like with animals or vehicles?",
+    "What is Encapsulation and why do we use private variables and getters/setters?",
+  ],
+  cn: [
+    "When you type a website name like google.com in your browser, what basic steps happen to load the page?",
+    "What is the difference between HTTP and secure HTTPS?",
+    "What is the difference between an IP address and a domain name?",
+  ],
+  dbms: [
+    "What is a database table, and what is the difference between a row and a column?",
+    "What is a Primary Key in SQL and why does almost every table have one?",
+    "How does a basic SELECT query with a WHERE clause work in SQL?",
+  ],
+};
+
 const TOPIC_STARTER_QUESTIONS = {
   frontend: [
     "Could you explain how the React reconciliation algorithm and Virtual DOM work under the hood, and how key props optimize rendering?",
@@ -63,13 +96,14 @@ export const startMockInterview = async (req, res) => {
     const { trackId, title, topic, difficulty, focusAreas = [] } = req.body;
 
     const topicKey = String(topic).toLowerCase().replace(/[^a-z_]/g, "_");
+    const isBeginner = difficulty === "Beginner" || difficulty === "Junior";
     const client = getGeminiClient();
 
     let interviewerGreeting = "";
 
     if (client) {
       try {
-        const prompt = `You are a friendly, encouraging, yet rigorous Senior Staff Technical Interviewer conducting a real-time voice technical mock interview.
+        const prompt = `You are a friendly, encouraging, patient Technical Interviewer conducting a real-time voice technical mock interview.
 Candidate Target: "${title}"
 Topic Domain: ${topic}
 Target Seniority Level: ${difficulty}
@@ -77,9 +111,8 @@ Key Focus Areas: ${focusAreas.join(", ")}
 
 Instructions:
 1. Greet the candidate briefly and warmly (1 short sentence, e.g. "Hello! Welcome to your technical interview for ${title}.").
-2. Briefly state what you'll be exploring today (1 sentence).
-3. Ask your FIRST foundational technical question directly related to ${topic}.
-4. Keep the entire response under 60-75 words. Use natural spoken English that sounds engaging and realistic when read aloud by text-to-speech. Do not use markdown headers, asterisks, or bullet points.`;
+2. ${isBeginner ? "Ask a simple, clear, approachable foundational question suitable for a beginner or junior developer (e.g. basic concepts, everyday syntax, or what something is used for)." : "Ask your FIRST foundational technical question directly related to " + topic + "."}
+3. Keep the entire response under 50-65 words so it sounds natural when spoken aloud. Use plain conversational English without markdown headers, bullet points, asterisks, or complex jargon.`;
 
         const response = await client.interactions.create({
           model: "gemini-3.8-flash",
@@ -93,8 +126,10 @@ Instructions:
     }
 
     if (!interviewerGreeting) {
-      const candidates = TOPIC_STARTER_QUESTIONS[topicKey] || TOPIC_STARTER_QUESTIONS.frontend;
-      const initialQ = candidates[Math.floor(Math.random() * candidates.length)];
+      const pool = isBeginner && BEGINNER_STARTER_QUESTIONS[topicKey]
+        ? BEGINNER_STARTER_QUESTIONS[topicKey]
+        : (TOPIC_STARTER_QUESTIONS[topicKey] || TOPIC_STARTER_QUESTIONS.frontend);
+      const initialQ = pool[Math.floor(Math.random() * pool.length)];
       interviewerGreeting = `Hello! Welcome to your ${difficulty} technical interview focusing on ${title}. I am excited to chat with you today. To get us started: ${initialQ}`;
     }
 
@@ -130,9 +165,11 @@ export const interviewTurn = async (req, res) => {
       .map((t) => `${t.speaker === "interviewer" ? "Interviewer" : "Candidate"}: ${t.text}`)
       .join("\n\n");
 
+    const isBeginner = difficulty === "Beginner" || difficulty === "Junior";
+
     if (client) {
       try {
-        const prompt = `You are an expert Senior Technical Interviewer conducting a voice technical interview on ${topic} (${difficulty} level).
+        const prompt = `You are a friendly, encouraging Technical Interviewer conducting a voice technical interview on ${topic} (${difficulty} level).
 Interview Title: "${title}"
 Focus Areas: ${focusAreas.join(", ")}
 
@@ -143,9 +180,9 @@ Candidate just said:
 "${candidateSpeech.trim()}"
 
 Your Task:
-1. Briefly acknowledge or probe their answer in 1 conversational sentence (e.g., validate a strong point, gently challenge an omission, or highlight a trade-off).
-2. Ask the next logical follow-up question. Either probe deeper into what they just mentioned, or shift to another critical area of ${topic}.
-3. Keep the total response strictly under 50-70 words so it sounds natural when spoken aloud.
+1. Briefly acknowledge their answer in 1 conversational sentence (e.g., validate a good point or gently encourage them).
+2. Ask the next question. ${isBeginner ? "Keep the question approachable, simple, and foundational for a beginner/junior candidate. Focus on core everyday concepts without complex trivia." : "Ask the next logical follow-up question, probing trade-offs or shifting to another critical area."}
+3. Keep the total response strictly under 50-65 words so it sounds natural when spoken aloud.
 4. Speak conversationally as a human interviewer. Never use bullet points, bold markers, or numbered lists.`;
 
         const response = await client.interactions.create({
@@ -161,10 +198,12 @@ Your Task:
 
     if (!interviewerReply) {
       const topicKey = String(topic).toLowerCase().replace(/[^a-z_]/g, "_");
-      const questions = TOPIC_STARTER_QUESTIONS[topicKey] || TOPIC_STARTER_QUESTIONS.frontend;
+      const questions = isBeginner && BEGINNER_STARTER_QUESTIONS[topicKey]
+        ? BEGINNER_STARTER_QUESTIONS[topicKey]
+        : (TOPIC_STARTER_QUESTIONS[topicKey] || TOPIC_STARTER_QUESTIONS.frontend);
       const turnCount = transcript.filter((t) => t.speaker === "interviewer").length;
-      const nextQ = questions[turnCount % questions.length] || "How would you handle failure scenarios and edge cases in this design?";
-      interviewerReply = `That is a thoughtful breakdown. Digging a bit deeper into this: ${nextQ}`;
+      const nextQ = questions[turnCount % questions.length] || "Could you give a simple real-world example of how you would use this?";
+      interviewerReply = `That makes a lot of sense! Moving along to our next question: ${nextQ}`;
     }
 
     return res.status(200).json({
