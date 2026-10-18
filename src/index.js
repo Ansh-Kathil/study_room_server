@@ -11,6 +11,7 @@ import authRoutes from "./routes/authRoutes.js";
 import roomRoutes from "./routes/roomRoutes.js";
 import submissionRoutes from "./routes/submissionRoutes.js";
 import aiRoutes from "./routes/aiRoutes.js";
+import mockInterviewRoutes from "./routes/mockInterviewRoutes.js";
 import { setupSockets } from "./sockets/socketHandler.js";
 
 // Load environment variables
@@ -66,6 +67,7 @@ app.use("/api/leetcode", leetcodeRoutes);
 app.use("/api/compiler", compilerRoutes);
 app.use("/api/submissions", submissionRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api/mock-interview", mockInterviewRoutes);
 
 // Health check route
 app.get("/api/health", (req, res) => {
