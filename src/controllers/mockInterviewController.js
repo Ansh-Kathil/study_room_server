@@ -8,6 +8,33 @@ const getGeminiClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+// Candidate models in preference order (gemini-3.7-flash is verified active)
+const GEMINI_MODELS = [
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-flash-latest",
+];
+
+const generateGeminiText = async (prompt) => {
+  const client = getGeminiClient();
+  if (!client) return "";
+
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      const response = await client.models.generateContent({
+        model: modelName,
+        contents: prompt,
+      });
+      const text = response.text?.trim();
+      if (text) return text;
+    } catch (err) {
+      console.warn(`Gemini generation warning for ${modelName}:`, err.message);
+    }
+  }
+  return "";
+};
+
 // Curated fallbacks for instant offline or rate-limited interview turns
 const BEGINNER_STARTER_QUESTIONS = {
   frontend: [
@@ -114,12 +141,7 @@ Instructions:
 2. ${isBeginner ? "Ask a simple, clear, approachable foundational question suitable for a beginner or junior developer (e.g. basic concepts, everyday syntax, or what something is used for)." : "Ask your FIRST foundational technical question directly related to " + topic + "."}
 3. Keep the entire response under 50-65 words so it sounds natural when spoken aloud. Use plain conversational English without markdown headers, bullet points, asterisks, or complex jargon.`;
 
-        const response = await client.interactions.create({
-          model: "gemini-3.8-flash",
-          input: prompt,
-        });
-
-        interviewerGreeting = response.output_text?.trim() || "";
+        interviewerGreeting = await generateGeminiText(prompt);
       } catch (err) {
         console.warn("Gemini start error, using fallback starter:", err.message);
       }
@@ -185,12 +207,7 @@ Your Task:
 3. Keep the total response strictly under 50-65 words so it sounds natural when spoken aloud.
 4. Speak conversationally as a human interviewer. Never use bullet points, bold markers, or numbered lists.`;
 
-        const response = await client.interactions.create({
-          model: "gemini-3.8-flash",
-          input: prompt,
-        });
-
-        interviewerReply = response.output_text?.trim() || "";
+        interviewerReply = await generateGeminiText(prompt);
       } catch (err) {
         console.warn("Gemini turn error, using adaptive fallback:", err.message);
       }
@@ -281,12 +298,7 @@ Return ONLY valid JSON with this exact schema:
   ]
 }`;
 
-        const response = await client.interactions.create({
-          model: "gemini-3.8-flash",
-          input: prompt,
-        });
-
-        const rawText = response.output_text?.trim() || "";
+        const rawText = await generateGeminiText(prompt);
         const jsonMatch = rawText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           report = JSON.parse(jsonMatch[0]);
