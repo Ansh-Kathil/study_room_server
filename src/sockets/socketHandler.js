@@ -187,8 +187,20 @@ export const setupSockets = (io) => {
     socket.on("peer_typing", ({ roomId, isTyping }) => {
       socket.to(roomId).emit("peer_typing_update", {
         userId: socket.user._id,
+        socketId: socket.id,
         name: socket.user.name,
         isTyping,
+      });
+    });
+
+    // EVENT: cursor_change (Real-time collaborative cursor and selection sync)
+    socket.on("cursor_change", ({ roomId, cursor, selection }) => {
+      socket.to(roomId).emit("cursor_update", {
+        userId: socket.user._id,
+        socketId: socket.id,
+        name: socket.user.name,
+        cursor,
+        selection,
       });
     });
 
@@ -407,6 +419,11 @@ export const setupSockets = (io) => {
         io.to(roomId).emit("online_users", Array.from(roomUsers.values()));
       }
     }
+
+    socket.to(roomId).emit("peer_cursor_remove", {
+      userId: socket.user?._id,
+      socketId: socket.id,
+    });
 
     socket.to(roomId).emit("user_left", {
       userId: socket.user._id,
