@@ -8,8 +8,10 @@ const getGeminiClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-// Candidate models in preference order (gemini-3.7-flash is verified active)
+// Candidate models in preference order (prioritizing high-availability & low-latency models)
 const GEMINI_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-flash-lite-latest",
   "gemini-3.7-flash",
   "gemini-3.8-flash",
   "gemini-3.5-flash",
@@ -37,6 +39,12 @@ const generateGeminiText = async (prompt) => {
 
 // Curated fallbacks for instant offline or rate-limited interview turns
 const BEGINNER_STARTER_QUESTIONS = {
+  hr: [
+    "Could you tell me a little bit about yourself, your background, and what got you passionate about tech?",
+    "Why are you interested in this specific role and our engineering culture?",
+    "Can you share an example of a time you received constructive feedback from a lead or peer, and how you acted on it?",
+    "How do you organize your tasks and maintain momentum when juggling multiple deadlines?",
+  ],
   frontend: [
     "Could you tell me about the differences between let, const, and var in JavaScript?",
     "In React, how do you explain the difference between state and props to someone new to web development?",
@@ -70,6 +78,13 @@ const BEGINNER_STARTER_QUESTIONS = {
 };
 
 const TOPIC_STARTER_QUESTIONS = {
+  hr: [
+    "Walk me through a challenging project where things did not go as planned. What was the situation, what actions did you take, and what was the outcome?",
+    "Tell me about a time you had a strong technical disagreement with a team member or product manager. How did you handle it to reach alignment?",
+    "Can you describe an occasion where you had to quickly learn an unfamiliar technology or framework to deliver a feature under time pressure?",
+    "How do you approach mentoring junior team members, conducting empathetic code reviews, and upholding positive engineering team culture?",
+    "Where do you see yourself technically and professionally in the next 2 to 3 years, and what skills are you actively developing right now?",
+  ],
   frontend: [
     "Could you explain how the React reconciliation algorithm and Virtual DOM work under the hood, and how key props optimize rendering?",
     "How does the browser event loop handle microtasks versus macrotasks when executing promises and setTimeout?",
@@ -181,9 +196,17 @@ export const interviewTurn = async (req, res) => {
     const client = getGeminiClient();
     let interviewerReply = "";
 
-    // Format previous turns for context
+    const candidateAnswerCount = transcript.filter((t) => t.speaker === "candidate").length;
+    const isConcludingTurn = candidateAnswerCount >= 5;
+
+    // Extract all previously asked questions from transcript to strictly avoid repetition
+    const previousQuestionsAsked = transcript
+      .filter((t) => t.speaker === "interviewer")
+      .map((t, idx) => `Q${idx + 1}: ${t.text}`)
+      .join("\n");
+
     const conversationHistory = transcript
-      .slice(-6)
+      .slice(-8)
       .map((t) => `${t.speaker === "interviewer" ? "Interviewer" : "Candidate"}: ${t.text}`)
       .join("\n\n");
 
@@ -191,21 +214,32 @@ export const interviewTurn = async (req, res) => {
 
     if (client) {
       try {
-        const prompt = `You are a friendly, encouraging Technical Interviewer conducting a voice technical interview on ${topic} (${difficulty} level).
-Interview Title: "${title}"
-Focus Areas: ${focusAreas.join(", ")}
+        const prompt = `You are a professional, friendly, and engaging Technical & Behavioral Interviewer conducting a mock interview for "${title}" (${topic}, ${difficulty} level).
+Key Focus Areas: ${focusAreas.join(", ")}
+
+Previous Questions Already Asked in This Session (DO NOT REPEAT ANY OF THESE TOPICS OR QUESTIONS):
+${previousQuestionsAsked || "None yet."}
 
 Recent Dialogue Context:
 ${conversationHistory}
 
-Candidate just said:
+Candidate just answered:
 "${candidateSpeech.trim()}"
 
-Your Task:
-1. Briefly acknowledge their answer in 1 conversational sentence (e.g., validate a good point or gently encourage them).
-2. Ask the next question. ${isBeginner ? "Keep the question approachable, simple, and foundational for a beginner/junior candidate. Focus on core everyday concepts without complex trivia." : "Ask the next logical follow-up question, probing trade-offs or shifting to another critical area."}
-3. Keep the total response strictly under 50-65 words so it sounds natural when spoken aloud.
-4. Speak conversationally as a human interviewer. Never use bullet points, bold markers, or numbered lists.`;
+Current Progress: The candidate has now answered ${candidateAnswerCount} question(s).
+
+${
+  isConcludingTurn
+    ? `Task: This is the FINAL concluding turn of the interview!
+1. Acknowledge and appreciate the candidate's last answer in 1 sentence.
+2. Provide a warm, encouraging closing statement (e.g. "That wraps up all our core interview questions for today! Thank you so much for your time and thoughtful responses. Whenever you're ready, please click 'End & Evaluate' in the top right to generate your detailed performance scorecard!").
+3. DO NOT ask any new questions. Keep response strictly under 55 words.`
+    : `Task:
+1. Briefly acknowledge their answer with 1 natural, conversational sentence (validate a strong point or provide a gentle thought).
+2. Ask the NEXT progressive question. Choose a fresh, different aspect from the focus areas (${focusAreas.join(", ")}) or probe a logical follow-up. NEVER ask a question that overlaps with the previously asked questions listed above!
+3. ${isBeginner ? "Keep the question foundational, simple, and encouraging." : "Ask an insightful question probing practical trade-offs or implementation depth."}
+4. Keep the total response strictly under 50-65 words so it sounds natural when spoken aloud. Never use bullet points or markdown bolding.`
+}`;
 
         interviewerReply = await generateGeminiText(prompt);
       } catch (err) {
@@ -214,18 +248,26 @@ Your Task:
     }
 
     if (!interviewerReply) {
-      const topicKey = String(topic).toLowerCase().replace(/[^a-z_]/g, "_");
-      const questions = isBeginner && BEGINNER_STARTER_QUESTIONS[topicKey]
-        ? BEGINNER_STARTER_QUESTIONS[topicKey]
-        : (TOPIC_STARTER_QUESTIONS[topicKey] || TOPIC_STARTER_QUESTIONS.frontend);
-      const turnCount = transcript.filter((t) => t.speaker === "interviewer").length;
-      const nextQ = questions[turnCount % questions.length] || "Could you give a simple real-world example of how you would use this?";
-      interviewerReply = `That makes a lot of sense! Moving along to our next question: ${nextQ}`;
+      if (isConcludingTurn) {
+        interviewerReply = "Thank you so much for walking through that! That concludes our questions for today's interview session. You did a fantastic job articulating your ideas. Please click 'End & Evaluate' at the top to view your comprehensive evaluation report!";
+      } else {
+        const topicKey = String(topic).toLowerCase().replace(/[^a-z_]/g, "_");
+        const questions = (isBeginner && BEGINNER_STARTER_QUESTIONS[topicKey]
+          ? BEGINNER_STARTER_QUESTIONS[topicKey]
+          : (TOPIC_STARTER_QUESTIONS[topicKey] || TOPIC_STARTER_QUESTIONS.frontend)) || [];
+
+        // Filter out questions that have already been asked to avoid any repetition
+        const unasked = questions.filter((q) => !transcript.some((t) => t.speaker === "interviewer" && t.text.includes(q.slice(0, 30))));
+        const nextQ = unasked[0] || questions[candidateAnswerCount % questions.length] || "Could you give a concrete real-world example of how you applied this in a past project?";
+
+        interviewerReply = `That's a very clear explanation! Let's explore our next area: ${nextQ}`;
+      }
     }
 
     return res.status(200).json({
       success: true,
       reply: interviewerReply,
+      isConcluded: isConcludingTurn,
     });
   } catch (error) {
     console.error("Interview turn error:", error);
@@ -248,111 +290,158 @@ export const endAndEvaluateInterview = async (req, res) => {
     const client = getGeminiClient();
     let report = null;
 
+    // Pair every question with the candidate's exact answer
+    const qnaPairs = [];
+    for (let i = 0; i < transcript.length; i++) {
+      if (transcript[i].speaker === "interviewer") {
+        const nextCandidateTurn = transcript.slice(i + 1).find((t) => t.speaker === "candidate");
+        if (nextCandidateTurn) {
+          qnaPairs.push({
+            question: transcript[i].text,
+            candidateAnswer: nextCandidateTurn.text,
+          });
+        }
+      }
+    }
+
     const fullTranscriptText = transcript
       .map((t) => `[${t.speaker.toUpperCase()}]: ${t.text}`)
       .join("\n\n");
 
+    const pairContext = qnaPairs
+      .map(
+        (p, idx) =>
+          `Question ${idx + 1}: "${p.question}"\nCandidate Answer ${idx + 1}: "${p.candidateAnswer}"`
+      )
+      .join("\n\n");
+
     if (client) {
       try {
-        const prompt = `You are a Principal Engineering Bar Raiser evaluating a candidate's technical mock interview.
+        const prompt = `You are a Principal Engineering Bar Raiser & Hiring Director evaluating a candidate's mock interview.
 Topic Domain: ${topic}
 Interview Title: "${title}"
 Target Level: ${difficulty}
 Duration: ${Math.round(duration / 60)} minutes
+Total Questions Answered: ${qnaPairs.length}
 
-Full Interview Dialogue:
+Complete Interview Transcript:
 ${fullTranscriptText}
 
-Evaluate the candidate thoroughly based on real FAANG engineering interview standards.
-Return ONLY valid JSON with this exact schema:
+Questions and Answers breakdown:
+${pairContext}
+
+Instructions:
+1. Provide a rigorous, deeply personalized evaluation based on the candidate's ACTUAL WORDS in the transcript.
+2. In "strengths", quote or reference specific points they answered well.
+3. In "areasForImprovement", give specific, actionable critiques addressing gaps in their actual answers (avoid generic text).
+4. In "modelAnswers", you MUST evaluate EVERY SINGLE question asked in the interview (all ${Math.max(1, qnaPairs.length)} questions). Provide specific feedback on their answer and an ideal senior engineer model answer for each question.
+5. Return ONLY valid JSON matching this exact schema:
 {
-  "overallScore": <integer between 30 and 98>,
+  "overallScore": <integer between 40 and 96>,
   "verdict": "<Strong Hire | Hire | Lean Hire | No Hire>",
-  "summary": "<2-3 sentence executive summary of candidate performance>",
-  "technicalDepthScore": <integer between 30 and 100>,
-  "problemSolvingScore": <integer between 30 and 100>,
-  "communicationScore": <integer between 30 and 100>,
-  "tradeoffsScore": <integer between 30 and 100>,
+  "summary": "<2-3 sentence personalized executive summary of how this candidate performed on ${title}>",
+  "technicalDepthScore": <integer between 35 and 100>,
+  "problemSolvingScore": <integer between 35 and 100>,
+  "communicationScore": <integer between 35 and 100>,
+  "tradeoffsScore": <integer between 35 and 100>,
   "strengths": [
-    "<specific technical strength with example from transcript>",
-    "<another strength>",
-    "<another strength>"
+    "<specific personalized strength referencing their actual words>",
+    "<another personalized strength>",
+    "<another personalized strength>"
   ],
   "areasForImprovement": [
-    "<specific area where candidate missed depth or gave incomplete answers>",
-    "<another improvement area>",
-    "<another improvement area>"
+    "<specific actionable improvement area identifying concepts they missed in their answers>",
+    "<another personalized improvement area>",
+    "<another personalized improvement area>"
   ],
   "modelAnswers": [
     {
-      "question": "<main question asked in interview>",
-      "candidateSummary": "<brief summary of what candidate answered>",
-      "feedback": "<constructive feedback on their answer>",
-      "idealAnswer": "<concise model answer a Senior/Staff engineer would give>"
+      "question": "<exact question asked by interviewer>",
+      "candidateSummary": "<accurate summary of what the candidate answered>",
+      "feedback": "<personalized critique of candidate's answer>",
+      "idealAnswer": "<concise, comprehensive senior-level model answer>"
     }
   ],
   "recommendedTopics": [
-    "<actionable topic or documentation to review next>",
-    "<another topic>",
-    "<another topic>"
+    "<specific technology, pattern, or documentation to study next based on their gaps>",
+    "<another targeted topic>",
+    "<another targeted topic>"
   ]
 }`;
 
         const rawText = await generateGeminiText(prompt);
         const jsonMatch = rawText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          report = JSON.parse(jsonMatch[0]);
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.overallScore && parsed.summary && Array.isArray(parsed.modelAnswers) && parsed.modelAnswers.length > 0) {
+            report = parsed;
+          }
         }
       } catch (err) {
         console.warn("Gemini evaluation report error, generating rubric fallback:", err.message);
       }
     }
 
-    // High quality deterministic evaluation fallback if Gemini JSON parsing fails
+    // High quality personalized fallback if Gemini JSON parsing fails
     if (!report) {
       const candidateTurns = transcript.filter((t) => t.speaker === "candidate");
       const totalWords = candidateTurns.reduce((sum, t) => sum + t.text.split(/\s+/).length, 0);
       const avgLength = candidateTurns.length > 0 ? totalWords / candidateTurns.length : 0;
 
-      let score = 72;
-      if (avgLength > 35) score += 12;
+      let score = 74;
+      if (avgLength > 40) score += 10;
       else if (avgLength < 15) score -= 14;
       if (candidateTurns.length >= 4) score += 6;
 
-      const finalScore = Math.min(94, Math.max(45, score));
+      const finalScore = Math.min(94, Math.max(48, score));
       const verdict =
         finalScore >= 85 ? "Strong Hire" : finalScore >= 70 ? "Hire" : finalScore >= 55 ? "Lean Hire" : "No Hire";
+
+      // Build model answers for ALL questions asked
+      const generatedModelAnswers = qnaPairs.map((pair, idx) => {
+        const words = pair.candidateAnswer.split(/\s+/).length;
+        const answerQuality = words > 25 ? "Good detail provided" : "Answer was brief; recommend elaborating with concrete technical examples";
+        return {
+          question: pair.question,
+          candidateSummary: pair.candidateAnswer.length > 130 ? pair.candidateAnswer.slice(0, 125) + "..." : pair.candidateAnswer,
+          feedback: `${answerQuality}. Focus on highlighting edge-cases, system constraints, and direct real-world experience.`,
+          idealAnswer: `When answering "${pair.question.slice(0, 60)}...", structure your explanation top-down: state the core definition, explain the underlying mechanism or lifecycle, and provide a concrete production trade-off.`,
+        };
+      });
+
+      const firstCandAnswer = candidateTurns[0]?.text || "";
+      const lastCandAnswer = candidateTurns[candidateTurns.length - 1]?.text || "";
 
       report = {
         overallScore: finalScore,
         verdict,
-        summary: `The candidate demonstrated good conceptual familiarity with ${topic} fundamentals. Responses were structured, with solid communication and practical awareness of core trade-offs.`,
-        technicalDepthScore: Math.min(100, finalScore + 2),
-        problemSolvingScore: Math.min(100, finalScore - 1),
+        summary: `The candidate completed ${qnaPairs.length} interview questions on ${title}. Demonstrates clear communication and practical awareness of ${topic} concepts, with opportunities to deepen quantitative trade-offs.`,
+        technicalDepthScore: Math.min(100, finalScore + 1),
+        problemSolvingScore: Math.min(100, finalScore - 2),
         communicationScore: Math.min(100, finalScore + 4),
         tradeoffsScore: Math.min(100, finalScore - 3),
         strengths: [
-          `Clear communication style with concise explanations during the interview.`,
-          `Understands core architectural concepts and terminology relevant to ${topic}.`,
-          `Willingness to explain trade-offs and consider practical system constraints.`,
+          `Articulated thoughts clearly during initial discussion on "${firstCandAnswer.slice(0, 50)}...".`,
+          `Maintained active conversational dialogue across all ${qnaPairs.length} questions.`,
+          `Demonstrated foundational familiarity with ${topic} and relevant tooling.`,
         ],
         areasForImprovement: [
-          `Provide deeper quantitative metrics (e.g. latency, throughput, memory complexity) when discussing scaling.`,
-          `Proactively address failure modes, circuit breaking, and edge case resilience.`,
-          `Structure complex explanations top-down before diving into low-level implementation details.`,
+          `Elaborate beyond high-level definitions when discussing questions like "${qnaPairs[0]?.question?.slice(0, 60) || topic}".`,
+          `Quantify performance impacts (e.g. latency, throughput, memory footprints) when explaining architectural decisions.`,
+          `Structure technical responses using the STAR format (Situation, Task, Action, Result) for behavioral and system questions.`,
         ],
-        modelAnswers: [
+        modelAnswers: generatedModelAnswers.length > 0 ? generatedModelAnswers : [
           {
-            question: transcript.find((t) => t.speaker === "interviewer")?.text || "Core architectural question",
-            candidateSummary: candidateTurns[0]?.text?.slice(0, 120) + "..." || "Discussed initial thoughts",
-            feedback: "Good baseline response. Could be strengthened by detailing edge-case recovery and concrete trade-offs.",
-            idealAnswer: `A senior engineer emphasizes requirements gathering, defines SLA/SLO boundaries, articulates clear high-level components, and evaluates explicit trade-offs between consistency, availability, and resource costs.`,
+            question: transcript.find((t) => t.speaker === "interviewer")?.text || `${topic} Core Interview Question`,
+            candidateSummary: candidateTurns[0]?.text?.slice(0, 120) || "Discussed initial thoughts",
+            feedback: "Answer addressed the surface requirement. Recommend explaining underlying execution mechanisms and trade-offs.",
+            idealAnswer: `A senior engineer defines requirements, articulates clear component boundaries, and contrasts alternative approaches with concrete performance trade-offs.`,
           },
         ],
         recommendedTopics: [
-          `Deep-dive into ${topic} production failure post-mortems and distributed systems patterns.`,
-          `Practice explaining architectural trade-offs using the STAR communication framework.`,
-          `Review performance profiling, caching strategies, and telemetry observability.`,
+          `Review advanced production patterns and case studies in ${topic}.`,
+          `Practice mock behavioral and technical delivery using STAR structure.`,
+          `Deep dive into failure modes, error handling, and performance optimization for ${title}.`,
         ],
       };
     }
